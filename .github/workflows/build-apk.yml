@@ -5,8 +5,12 @@
 #    仅供你自己手机本地安装体验/测试，不能提交 TapTap 等商店。
 #    要上架必须配置签名 Secrets（见 README「正式签名包（上架 TapTap 用）」一节）。
 #
-# 注意：GitHub 不允许在步骤的 if 里直接写 ${{ secrets.XXX }}（会让整个工作流文件失效），
-#       所以下面先把 secrets 放进 job 级 env，再在 if 里判断 env。
+# 两点关键写法说明（之前失败就是踩了这两个坑）：
+#  1) GitHub 不允许在步骤的 if 里直接写 ${{ secrets.XXX }}（会让整个工作流文件失效、
+#     连 job 都不创建）。所以下面先把 secrets 放进 job 级 env，再在 if 里判断 env。
+#  2) 不使用 android-actions/setup-android 第三方 action（容易在云端拉 cmdline-tools 失败），
+#     直接使用 GitHub ubuntu 运行器里【已预装】的 Android SDK，并用顺带安装的方式补齐
+#     platforms;android-34 / build-tools;34.0.0，稳定性更高。
 name: Build Android APK
 
 on:
@@ -34,23 +38,42 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # 自带一份 Gradle 8.6（工程里没有 wrapper，所以必须给一个 gradle 命令）
+      - name: Install Gradle 8.6
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/gradle.zip" https://services.gradle.org/distributions/gradle-8.6-bin.zip
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$HOME"
+          echo "$HOME/gradle-8.6/bin" >> "$GITHUB_PATH"
+          "$HOME/gradle-8.6/bin/gradle" -v
 
-      - name: Install SDK packages (platforms/build-tools)
-        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.6'
+      # 直接使用运行器预装的 Android SDK，并补齐本项目需要的包
+      - name: Prepare Android SDK
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "使用 Android SDK: $SDK"
+          ls "$SDK" || true
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "sdk.dir=$SDK" > local.properties
+          CMDBIN="$(ls -d "$SDK"/cmdline-tools/*/bin 2>/dev/null | head -1 || true)"
+          if [ -n "$CMDBIN" ]; then
+            echo "$CMDBIN" >> "$GITHUB_PATH"
+            export PATH="$CMDBIN:$PATH"
+            echo "sdkmanager: $CMDBIN"
+          else
+            echo "未找到 cmdline-tools，跳过 sdkmanager（直接用预装包）"
+          fi
+          if command -v sdkmanager >/dev/null 2>&1; then
+            yes | sdkmanager --licenses >/dev/null 2>&1 || true
+            sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
+          fi
 
       - name: Decode keystore (仅当配置了 KEYSTORE_BASE64 时执行)
         if: ${{ env.KEYSTORE_BASE64 != '' }}
         run: echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
 
       - name: Build Release APK
-        run: gradle assembleRelease --stacktrace
+        run: gradle assembleRelease --stacktrace --no-daemon
         env:
           KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
 
@@ -59,4 +82,4 @@ jobs:
         with:
           name: xiangqi-release-apk
           path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
