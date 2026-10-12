@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.xiangqi.h5game'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.xiangqi.h5game"
+        minSdk 26          // Android 8.0+，2026 年可忽略更低版本
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    // 签名：通过环境变量注入，绝不写死到仓库里。
+    // 未配置 keystore 密钥（没有 KEYSTORE_BASE64 等 Secrets）时，release 自动回退到 debug 签名，
+    // 这种包仅供本地测试，不能上架商店；配置 Secrets 后得到正式签名包。
+    signingConfigs {
+        release {
+            def ksFile = System.getenv("KEYSTORE_FILE")
+            // 始终指向工作流注入的路径；文件是否存在决定最终用正式签名还是回退 debug
+            storeFile file(ksFile != null ? ksFile : "release.keystore")
+            storePassword System.getenv("KEYSTORE_PASSWORD")
+            keyAlias System.getenv("KEY_ALIAS")
+            keyPassword System.getenv("KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig (signingConfigs.release.storeFile != null && signingConfigs.release.storeFile.exists())
+                ? signingConfigs.release : signingConfigs.debug
+        }
+        debug {
+            // 默认使用 Android 自动生成的 debug 签名，可直接安装测试
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

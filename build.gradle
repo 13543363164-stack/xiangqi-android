@@ -1,0 +1,4 @@
+// Top-level build file. 子模块在 app/build.gradle 里声明插件。
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+}
