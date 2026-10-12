@@ -1,1 +1,62 @@
+# 一键云端出包（纯网页 GitHub 操作即可，无需本机装 Android Studio / Git / JDK）。
+# 用法：上传工程到 GitHub → Actions → 手动 Run workflow → 下载 Artifacts（app-release.apk）。
+#
+# ⚠️ 默认（未配置 Secrets）产出的是【debug 测试包】，用 Android 自动 debug 签名，
+#    仅供你自己手机本地安装体验/测试，不能提交 TapTap 等商店。
+#    要上架必须配置签名 Secrets（见 README「正式签名包（上架 TapTap 用）」一节）。
+#
+# 注意：GitHub 不允许在步骤的 if 里直接写 ${{ secrets.XXX }}（会让整个工作流文件失效），
+#       所以下面先把 secrets 放进 job 级 env，再在 if 里判断 env。
+name: Build Android APK
 
+on:
+  workflow_dispatch:        # 允许在 Actions 页面手动触发
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages (platforms/build-tools)
+        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.6'
+
+      - name: Decode keystore (仅当配置了 KEYSTORE_BASE64 时执行)
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
+
+      - name: Build Release APK
+        run: gradle assembleRelease --stacktrace
+        env:
+          KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiangqi-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
