@@ -127,11 +127,14 @@ plugins {
 
 ```yaml
 # 一键云端出包（纯网页 GitHub 操作即可，无需本机装 Android Studio / Git / JDK）。
-# 用法：把本工程推/上传到 GitHub → Actions → 手动 Run workflow → 下载 Artifacts。
+# 用法：上传工程到 GitHub → Actions → 手动 Run workflow → 下载 Artifacts（app-release.apk）。
 #
 # ⚠️ 默认（未配置 Secrets）产出的是【debug 测试包】，用 Android 自动 debug 签名，
 #    仅供你自己手机本地安装体验/测试，不能提交 TapTap 等商店。
 #    要上架必须配置签名 Secrets（见 README「正式签名包（上架 TapTap 用）」一节）。
+#
+# 注意：GitHub 不允许在步骤的 if 里直接写 ${{ secrets.XXX }}（会让整个工作流文件失效），
+#       所以下面先把 secrets 放进 job 级 env，再在 if 里判断 env。
 name: Build Android APK
 
 on:
@@ -142,6 +145,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -163,26 +173,21 @@ jobs:
         with:
           gradle-version: '8.6'
 
-      - name: Generate Gradle wrapper
-        run: gradle wrapper
-
-      - name: Decode keystore (可选，仅配置 Secrets 后才会执行)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
+      - name: Decode keystore (仅当配置了 KEYSTORE_BASE64 时执行)
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease
+        run: gradle assembleRelease --stacktrace
         env:
           KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: xiangqi-release-apk
           path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
 ```
 
 ### 代码④ `gradle.properties`
@@ -212,16 +217,16 @@ android {
     }
 
     // 签名：通过环境变量注入，绝不写死到仓库里。
-    // 未配置 keystore 密钥（没有 KEYSTORE_BASE64 等 Secrets）时，release 自动回退到 debug 签名，
-    // 这种包仅供本地测试，不能上架商店；配置 Secrets 后得到正式签名包。
+    // 只有密钥文件真实存在时才启用正式签名；否则 release 自动回退到 debug 签名（仅本地测试用）。
     signingConfigs {
         release {
             def ksFile = System.getenv("KEYSTORE_FILE")
-            // 始终指向工作流注入的路径；文件是否存在决定最终用正式签名还是回退 debug
-            storeFile file(ksFile != null ? ksFile : "release.keystore")
-            storePassword System.getenv("KEYSTORE_PASSWORD")
-            keyAlias System.getenv("KEY_ALIAS")
-            keyPassword System.getenv("KEY_PASSWORD")
+            if (ksFile != null && file(ksFile).exists()) {
+                storeFile file(ksFile)
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS")
+                keyPassword System.getenv("KEY_PASSWORD")
+            }
         }
     }
 
@@ -229,8 +234,7 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig (signingConfigs.release.storeFile != null && signingConfigs.release.storeFile.exists())
-                ? signingConfigs.release : signingConfigs.debug
+            signingConfig(signingConfigs.release.storeFile != null ? signingConfigs.release : signingConfigs.debug)
         }
         debug {
             // 默认使用 Android 自动生成的 debug 签名，可直接安装测试
